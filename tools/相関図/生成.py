@@ -352,8 +352,18 @@ def 段の配置(段, 帯上端, 線あり, 話データ=None):
     else:
         起点 = 設定['ノード']['起点x'] + ずれ
     置く = []
+    寄せ = 0
+    if 地.get('夫婦の見せ方') == '隣接' and 段.get('夫婦'):
+        名々 = [x['名'] for x in 段['ノード']]
+        組 = [(名々.index(a), 名々.index(b)) for a, b in 段['夫婦']
+              if a in 名々 and b in 名々 and abs(名々.index(a) - 名々.index(b)) == 1]
+        寄せ = 14 if 組 else 0
     for i, nd in enumerate(段['ノード']):
         x = 起点 + i * (幅 + 設定['ノード']['余白'])
+        if 寄せ:
+            for p, q in 組:
+                if i == min(p, q): x += 寄せ
+                elif i == max(p, q): x -= 寄せ
         置く.append({**nd, 'x': x, 'y': ノード上端, '幅': 幅, '高さ': 高さ, 'n': n, '規格': 規格})
     return 置く, 帯高, ノード上端
 
@@ -419,16 +429,24 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
 
     # 線（ノードより先に描いて下に敷く）
     for i, 段 in enumerate(段リスト):
+        やり方 = 地.get('夫婦の見せ方', '二重線')
         for a, b in 段['夫婦']:
             na = next(x for x in 段['ノード'] if x['名'] == a)
             nb = next(x for x in 段['ノード'] if x['名'] == b)
             左 = min(na['x'] + na['幅'], nb['x'] + nb['幅'])
             右 = max(na['x'], nb['x'])
             中 = na['y'] + na['高さ'] / 2
-            半 = (地['夫婦線間隔'] / 2 + 地['夫婦線太さ'] / 2)
+            if やり方 == '囲い':
+                x0 = min(na['x'], nb['x']); x1 = max(na['x'] + na['幅'], nb['x'] + nb['幅'])
+                部品.append(
+                    f'<div class="夫婦囲い" style="left:{x0-10}px;top:{na["y"]-10}px;'
+                    f'width:{x1-x0+20}px;height:{na["高さ"]+20}px"></div>')
+            太 = 地['夫婦線太さ'] * (2 if やり方 == '太い二重線' else 1)
+            間 = 地['夫婦線間隔'] * (2 if やり方 == '太い二重線' else 1)
+            半 = (間 / 2 + 太 / 2)
             for d in (-半, 半):
-                部品.append(f'<div class="線" style="left:{左}px;top:{中+d-地["夫婦線太さ"]/2}px;'
-                            f'width:{右-左}px;height:{地["夫婦線太さ"]}px"></div>')
+                部品.append(f'<div class="線" style="left:{左}px;top:{中+d-太/2}px;'
+                            f'width:{右-左}px;height:{太}px"></div>')
         if i + 1 < len(段リスト):
             下 = 段リスト[i + 1]
             子 = [nd for nd in 下['ノード'] if nd.get('続柄', '子') == '子']
@@ -624,6 +642,7 @@ body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;over
      font-weight:{書体["漢字太さ"]};line-height:1}}
 .サブ{{position:absolute;text-align:center;font-weight:{書体["サブ太さ"]};line-height:1}}
 .強調{{position:absolute;z-index:10}}
+.夫婦囲い{{position:absolute;border:3px solid {地["線"]};border-radius:24px}}
 .帯ラベル縦{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
      font-size:{地["帯ラベル字"]}px;color:{地["帯ラベル色"]};
      font-weight:{書体["帯ラベル太さ"]};line-height:1}}
