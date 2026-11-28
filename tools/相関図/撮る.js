@@ -4,12 +4,21 @@ const fs = require('fs');
 
 (async () => {
   const 指示書 = JSON.parse(fs.readFileSync(process.argv[2], 'utf-8'));
-  const ブラウザ = await chromium.launch();
+  // 環境によって文字の描かれ方が変わらないよう、描画を固定する
+  const ブラウザ = await chromium.launch({
+    args: ['--font-render-hinting=none', '--disable-lcd-text',
+           '--force-color-profile=srgb'],
+  });
   const ページ = await ブラウザ.newPage({
     viewport: { width: 指示書.幅, height: 指示書.高さ },
     deviceScaleFactor: 指示書.倍率,
   });
+  if (!指示書.指示 || !指示書.指示.length) {
+    console.error('✗ 書き出すものがありません');
+    process.exit(1);
+  }
   let 検査済み = false;
+  let 枚 = 0;
   for (const 仕事 of 指示書.指示) {
     await ページ.goto('file://' + 仕事.html);
 
@@ -32,6 +41,8 @@ const fs = require('fs');
       検査済み = true;
     }
     await ページ.screenshot({ path: 仕事.png });
+    枚++;
+    if (枚 % 10 === 0) console.log(`  ${枚} / ${指示書.指示.length} 枚`);
   }
   await ブラウザ.close();
   console.log(`  ${指示書.指示.length}枚を書き出した（${指示書.幅}×${指示書.高さ} の${指示書.倍率}倍）`);

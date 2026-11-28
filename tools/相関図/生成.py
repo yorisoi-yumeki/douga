@@ -17,7 +17,12 @@ import json, sys, os, subprocess, shutil
 
 
 # ────────────────────────── 書体 ──────────────────────────
-import base64, hashlib, re, urllib.parse
+import base64, hashlib, html as _html, re, shutil as _sh, time, urllib.parse
+
+
+def e(x):
+    """HTMLに出す文字をエスケープする（& < > が名前に入っても壊れないように）"""
+    return _html.escape(str(x))
 
 書体置き場 = os.path.join(ここ, '書体')
 ブラウザのふり = ('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
@@ -53,12 +58,34 @@ def 書体を取り寄せる(家, 太さ, 字):
     if not os.path.exists(殻):
         url = (f'https://fonts.googleapis.com/css2?family={家.replace(" ", "+")}'
                f':wght@{太さ}&text={urllib.parse.quote(字)}')
-        css = subprocess.run(['curl', '-sS', '-A', ブラウザのふり, url],
-                             capture_output=True, text=True, check=True).stdout
-        見つけた = re.findall(r'url\((https://[^)]+)\)', css)
+        # ⚠ curl は -f が無いと HTTP 404 でも終了コード0を返す。
+        #   check=True だけでは失敗を捕まえられず、エラーHTMLが書体として
+        #   保存され、以後ずっとそのゴミを読み続けることになる
+        共通 = ['curl', '-sS', '-f', '--retry', '2', '-A', ブラウザのふり]
+        r = subprocess.run(共通 + [url], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise SystemExit(f'✗ 書体の一覧を取り寄せられませんでした（{家} {太さ}）\n'
+                             f'  ネットにつながっているか確かめてください。\n'
+                             f'  curl: {r.stderr.strip()[:200]}')
+        見つけた = re.findall(r'url\((https://[^)]+)\)', r.stdout)
         if not 見つけた:
-            raise SystemExit(f'✗ 書体を取り寄せられない: {家} {太さ}\n{css[:200]}')
-        subprocess.run(['curl', '-sS', '-o', 殻, 見つけた[0]], check=True)
+            raise SystemExit(f'✗ 書体のURLが見つかりません: {家} {太さ}\n'
+                             f'  {r.stdout[:200]}')
+        if len(見つけた) > 1:
+            print(f'  ⚠ {家} {太さ} の書体が{len(見つけた)}個に分かれています。'
+                  f'1個目だけ使うため、一部の字が欠けるかもしれません')
+        仮 = 殻 + '.tmp'
+        r2 = subprocess.run(共通 + ['-o', 仮, 見つけた[0]], capture_output=True)
+        if r2.returncode != 0:
+            if os.path.exists(仮):
+                os.remove(仮)
+            raise SystemExit(f'✗ 書体を取り寄せられませんでした（{家} {太さ}）\n'
+                             f'  curl: {r2.stderr.decode(errors="replace")[:200]}')
+        if open(仮, 'rb').read(4) != b'wOF2':
+            os.remove(仮)
+            raise SystemExit(f'✗ 取り寄せたファイルが書体ではありません（{家} {太さ}）。'
+                             f'もう一度試してください')
+        os.replace(仮, 殻)      # 検査を通ってから本採用
         print(f'  書体を取り寄せた: {家} {太さ}（{os.path.getsize(殻):,} bytes）')
     return base64.b64encode(open(殻, 'rb').read()).decode()
 
@@ -77,6 +104,11 @@ def 書体のCSS(話データ):
 
 
 # ────────────────────────── 寸法 ──────────────────────────
+def 内側の底():
+    """外枠の内側の下端。上が外周20pxから始まるので、下も同じだけ空ける"""
+    return 設定['キャンバス']['高さ'] - 設定['キャンバス']['外周']
+
+
 def 図幅():
     return 設定['キャンバス'].get('相関図幅', 設定['キャンバス']['幅'])
 
@@ -216,6 +248,79 @@ def 幅表():
         if not 仕様どおり:
             表[n]['幅'] = 幅
     return 表
+
+
+# ────────────────── データの検査（寸法より先に見る）──────────────────
+def データを検める(話データ):
+    """名前の綴りや参照のつじつまを見る。寸法の検算より先に呼ぶ。
+
+    ⚠ これが無いと、ノード名を1字書き間違えただけで KeyError で落ち、
+      どこが悪いのか分からない（検算関数自身が落ちるため）。
+    """
+    問題 = []
+    定義 = set(話データ.get('ノード', {}))
+    系統 = set(設定['系統'])
+    最大 = 設定['ノード']['1行の最大数']
+
+    for 名, v in 話データ.get('ノード', {}).items():
+        if v.get('系統') not in 系統:
+            問題.append(f'ノード「{名}」の系統「{v.get("系統")}」は共通設定.json に'
+                        f'ありません。使えるのは {"／".join(sorted(系統))}')
+
+    def 似た名前(名):
+        近い = [x for x in 定義 if x[:2] == 名[:2] and x != 名]
+        return f'「{近い[0]}」の書き間違いでは？' if 近い else ''
+
+    for pid, p in 話データ.get('ページ', {}).items():
+        置き場 = ([(i, [nd['名'] for nd in 段['ノード']], 段)
+                   for i, 段 in enumerate(p.get('段', []), 1)]
+                  or [(1, [x['名'] for x in p.get('配置', [])], p)])
+        for i, 名々, 段 in 置き場:
+            for 名 in 名々:
+                if 名 not in 定義:
+                    問題.append(f'{pid} の{i}段目「{名}」が「ノード」に定義されて'
+                                f'いません。{似た名前(名)}')
+            if len(名々) > 最大 and p.get('方式') != '関係図':
+                問題.append(f'{pid} の{i}段目にノードが{len(名々)}個あります'
+                            f'（1段に置けるのは{最大}個まで）。段を分けてください')
+            if len(名々) != len(set(名々)):
+                問題.append(f'{pid} の{i}段目に同じ名前が2回出ています')
+            for 組 in 段.get('夫婦', []):
+                for x in 組:
+                    if x not in 名々:
+                        問題.append(f'{pid} の{i}段目の「夫婦」に書いた「{x}」が、'
+                                    f'その段のノードにありません'
+                                    f'（その段：{"／".join(名々)}）')
+            for rel in 段.get('関係', []):
+                for 鍵 in ('a', 'b'):
+                    if rel.get(鍵) not in 名々:
+                        問題.append(f'{pid} の{i}段目の「関係」の{鍵}「{rel.get(鍵)}」が、'
+                                    f'その段のノードにありません')
+                if rel.get('種') and rel['種'] not in 設定['関係図']['関係の色']:
+                    問題.append(f'{pid} の関係の種「{rel["種"]}」は共通設定.json に'
+                                f'ありません。使えるのは '
+                                f'{"／".join(設定["関係図"]["関係の色"])}')
+
+    ページ名 = set(話データ.get('ページ', {}))
+    見た番号 = set()
+    for c in 話データ.get('カット', []):
+        if c.get('ページ') not in ページ名:
+            問題.append(f'カット{c.get("カット")} が指す「{c.get("ページ")}」が'
+                        f'「ページ」にありません')
+        for 組 in (c.get('強調') or []):
+            if isinstance(組, str):
+                問題.append(f'カット{c.get("カット")} の「強調」は二重の配列です。'
+                            f'["{組}"] ではなく [["{組}"]] と書いてください')
+                continue
+            for 名 in 組:
+                if 名 not in 定義:
+                    問題.append(f'カット{c.get("カット")} の強調「{名}」が'
+                                f'「ノード」に定義されていません。{似た名前(名)}')
+        if c.get('カット') in 見た番号:
+            問題.append(f'カット番号 {c.get("カット")} が2回出ています'
+                        f'（PNGが上書きされます）')
+        見た番号.add(c.get('カット'))
+    return 問題
 
 
 # ────────────────────────── 検算 ──────────────────────────
@@ -433,11 +538,11 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
                 部品.append(
                     f'<div class="帯ラベル縦" style="left:{地["帯左"]+8}px;'
                     f'top:{段["帯上端"]+12}px;width:{地["帯ラベル字"]}px;'
-                    f'height:{段["帯高"]-24}px">{段["ラベル"]}</div>')
+                    f'height:{段["帯高"]-24}px">{e(段["ラベル"])}</div>')
             else:
                 部品.append(
                     f'<div class="帯ラベル" style="left:{地["帯左"]+地["帯ラベル左"]}px;'
-                    f'top:{段["帯上端"]+地["帯ラベル下端"]-地["帯ラベル字"]}px">{段["ラベル"]}</div>')
+                    f'top:{段["帯上端"]+地["帯ラベル下端"]-地["帯ラベル字"]}px">{e(段["ラベル"])}</div>')
 
     # 線（ノードより先に描いて下に敷く）
     for i, 段 in enumerate(段リスト):
@@ -460,7 +565,7 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
                             f'border-color:{色};background:{配["塗り"]}"></div>')
                 部品.append(f'<div class="関係札" style="left:{(x0+x1)/2}px;top:{y1+14}px;'
                             f'font-size:{設["札の字"]}px;background:{配["札"]}">'
-                            f'{rel["札"]}</div>')
+                            f'{e(rel["札"])}</div>')
             else:
                 左, 右 = (na, nb) if na['x'] < nb['x'] else (nb, na)
                 xa = 左['x'] + 左['幅']; xb = 右['x']
@@ -470,7 +575,7 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
                 部品.append(f'<div class="関係札" style="left:{(xa+xb)/2}px;'
                             f'top:{cy-設["札の字"]-6}px;'
                             f'font-size:{設["札の字"]}px;background:{配["札"]}">'
-                            f'{rel["札"]}</div>')
+                            f'{e(rel["札"])}</div>')
 
         やり方 = 地.get('夫婦の見せ方', '二重線')
         for a, b in 段.get('夫婦', []):
@@ -565,21 +670,21 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
                 部品.append(
                     f'<div class="縦名" style="left:{名x}px;top:{上}px;'
                     f'width:{名幅}px;height:{名高}px;font-size:{字}px;'
-                    f'color:{文字色}">{名}</div>')
+                    f'color:{文字色}">{e(名)}</div>')
                 if 小:
                     小高 = -(-len(小) // 小列) * 漢
                     部品.append(
                         f'<div class="縦小" style="left:{名x-規格["すきま"]-小幅}px;'
                         f'top:{上}px;width:{小幅}px;'
                         f'height:{小高}px;font-size:{漢}px;'
-                        f'color:{文字色}">{小}</div>')
+                        f'color:{文字色}">{e(小)}</div>')
                 if 役:
                     if 位置 == '左列':
                         rx = 名x - (規格['すきま'] + 小幅 if 小 else 0) - 規格['役割すきま'] - 役幅
                         部品.append(
                             f'<div class="縦役" style="left:{rx}px;top:{上}px;'
                             f'width:{役幅}px;height:{-(-len(役)//役列)*役字}px;'
-                            f'font-size:{役字}px;color:{文字色}">{役}</div>')
+                            f'font-size:{役字}px;color:{文字色}">{e(役)}</div>')
                     elif 位置 in ('重ね上', '重ね下', '重ね左'):
                         tz = 規格['役割字']; th = tz + 12
                         地色 = 系['塗り'] if not 退場 else 地寸法()['背景']
@@ -590,7 +695,7 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
                                 f'top:{nd["y"]+24}px;width:{tw}px;'
                                 f'height:{len(役)*tz+22}px;font-size:{tz}px;'
                                 f'color:{地色};background:{文字色};'
-                                f'border:2px solid {地色}">{役}</div>')
+                                f'border:2px solid {地色}">{e(役)}</div>')
                         else:
                             y = (nd['y'] - th / 2 if 位置 == '重ね上'
                                  else nd['y'] + nd['高さ'] - th / 2)
@@ -598,25 +703,25 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
                                 f'<div class="重ねタグ" style="left:{nd["x"]+28}px;'
                                 f'top:{y}px;height:{th}px;font-size:{tz}px;'
                                 f'color:{地色};background:{文字色};'
-                                f'border:2px solid {地色}">{役}</div>')
+                                f'border:2px solid {地色}">{e(役)}</div>')
                     elif 位置 == '枠外下':
                         sz = 規格['役割字']
                         部品.append(
                             f'<div class="サブ" style="left:{nd["x"]}px;'
                             f'top:{nd["y"]+nd["高さ"]+8}px;width:{nd["幅"]}px;'
-                            f'height:{sz}px;font-size:{sz}px;color:{地["帯ラベル色"]}">{役}</div>')
+                            f'height:{sz}px;font-size:{sz}px;color:{地["帯ラベル色"]}">{e(役)}</div>')
                     elif 位置 == '上タグ':
                         部品.append(
                             f'<div class="タグ" style="left:{nd["x"]+10}px;'
                             f'top:{nd["y"]+8}px;height:{役字+8}px;'
                             f'font-size:{役字}px;color:{系["塗り"] if not 退場 else 系["輪郭"]};'
-                            f'background:{文字色}">{役}</div>')
+                            f'background:{文字色}">{e(役)}</div>')
                     else:
                         sz = 規格['サブ']
                         部品.append(
                             f'<div class="サブ" style="left:{nd["x"]}px;'
                             f'top:{nd["y"]+規格["サブy"]-sz}px;width:{nd["幅"]}px;'
-                            f'height:{sz}px;font-size:{sz}px;color:{文字色}">{役}</div>')
+                            f'height:{sz}px;font-size:{sz}px;color:{文字色}">{e(役)}</div>')
                 continue
             行 = 折る(nd['名'], 規格, nd['n'])
             字 = 設定['ノード']['神名字サイズ']
@@ -628,7 +733,7 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
             for t, by in zip(行, ys):
                 部品.append(
                     f'<div class="神名" style="left:{nd["x"]}px;top:{nd["y"]+by-字}px;'
-                    f'width:{nd["幅"]}px;height:{字}px;font-size:{字}px;color:{文字色}">{t}</div>')
+                    f'width:{nd["幅"]}px;height:{字}px;font-size:{字}px;color:{文字色}">{e(t)}</div>')
             小 = 話データ['ノード'][nd['名']].get('小')
             if 小:
                 s = 規格['漢字']
@@ -638,18 +743,18 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
                     部品.append(
                         f'<div class="小" style="left:{nd["x"]}px;'
                         f'top:{nd["y"]+規格["漢字y"]+38*j-s}px;'
-                        f'width:{nd["幅"]}px;height:{s}px;font-size:{s}px;color:{文字色}">{t}</div>')
+                        f'width:{nd["幅"]}px;height:{s}px;font-size:{s}px;color:{文字色}">{e(t)}</div>')
             サブ = nd.get('サブ')
             if サブ:
                 s = 規格['サブ']
                 部品.append(
                     f'<div class="サブ" style="left:{nd["x"]}px;top:{nd["y"]+規格["サブy"]-s}px;'
-                    f'width:{nd["幅"]}px;height:{s}px;font-size:{s}px;color:{文字色}">{サブ}</div>')
+                    f'width:{nd["幅"]}px;height:{s}px;font-size:{s}px;color:{文字色}">{e(サブ)}</div>')
 
     # 強調枠（最後に描いて最前面）
     for 段 in 段リスト:
         for nd in 段['ノード']:
-            if nd['名'] in 強調:
+            if nd['名'] in set(強調):
                 す = 強['すきま']; 太 = 強['太さ']
                 # ノードは box-sizing:border-box なので、3pxの輪郭線は幅の内側にある。
                 # 強調枠の外側 ＝ ノードの外周 ＋ すきま ＋ 枠の太さ。
@@ -787,7 +892,7 @@ def 関係図のHTML(話データ, ページid, 強調, 書体css):
                         f'width:{太}px;height:{y1-my}px;background:{色}"></div>')
             lx, ly = (ux + dx) / 2, my
         部品.append(f'<div class="関係札" style="left:{lx}px;top:{ly}px;'
-                    f'font-size:{設["札の字"]}px;background:{色}">{rel["札"]}</div>')
+                    f'font-size:{設["札の字"]}px;background:{色}">{e(rel["札"])}</div>')
     # ノード
     for nd in 置く:
         系 = 設定['系統'][話データ['ノード'][nd['名']]['系統']]
@@ -808,20 +913,20 @@ def 関係図のHTML(話データ, ページid, 強調, 書体css):
         名x = 右端 - 名幅
         上 = nd['y'] + 規格['上余白']
         部品.append(f'<div class="縦名" style="left:{名x}px;top:{上}px;width:{名幅}px;'
-                    f'height:{-(-len(名)//名列)*字}px;font-size:{字}px;color:{文字色}">{名}</div>')
+                    f'height:{-(-len(名)//名列)*字}px;font-size:{字}px;color:{文字色}">{e(名)}</div>')
         if 小:
             部品.append(f'<div class="縦小" style="left:{名x-規格["すきま"]-小幅}px;top:{上}px;'
                         f'width:{小幅}px;height:{-(-len(小)//小列)*漢}px;'
-                        f'font-size:{漢}px;color:{文字色}">{小}</div>')
+                        f'font-size:{漢}px;color:{文字色}">{e(小)}</div>')
         役 = nd.get('サブ')
         if 役:
             tz = 規格['役割字']; th = tz + 12
             部品.append(f'<div class="重ねタグ" style="left:{nd["x"]+28}px;'
                         f'top:{nd["y"]-th/2}px;height:{th}px;font-size:{tz}px;'
                         f'color:{系["塗り"] if not 退場 else 地["背景"]};background:{文字色};'
-                        f'border:2px solid {系["塗り"] if not 退場 else 地["背景"]}">{役}</div>')
+                        f'border:2px solid {系["塗り"] if not 退場 else 地["背景"]}">{e(役)}</div>')
     for nd in 置く:
-        if nd['名'] in 強調:
+        if nd['名'] in set(強調):
             す = 強['すきま']; 太 = 強['太さ']
             部品.append(
                 f'<div class="強調" style="left:{nd["x"]-す-太}px;top:{nd["y"]-す-太}px;'
@@ -900,6 +1005,13 @@ def 生成(話番号, 表だけ=False, 強行=False, 固定段階=False):
     経路 = os.path.join(ここ, 'データ', f'{話番号}.json')
     話データ = json.load(open(経路, encoding='utf-8'))
 
+    筋 = データを検める(話データ)
+    if 筋:
+        print(f'✗ 第{話番号}話 データに{len(筋)}件の問題')
+        for x in 筋:
+            print('   ', x)
+        raise SystemExit(1)
+
     if 縦書きか() and not 固定段階:
         見つけた = 収まる段階を探す(話データ)
         if 見つけた is None:
@@ -937,15 +1049,21 @@ def 生成(話番号, 表だけ=False, 強行=False, 固定段階=False):
             置く, _ = 関係図を組む(話データ, pid)
             if 置く:
                 下端 = max(x['y'] + x['高さ'] for x in 置く)
-                if 下端 > 設定['キャンバス']['高さ']:
-                    問題.append(f'{pid} 関係図の縦が{下端}pxで、'
-                                f'{設定["キャンバス"]["高さ"]}pxに収まらない')
+                張り = 設定['強調枠']['すきま'] + 設定['強調枠']['太さ']
+                if 下端 + 張り > 内側の底():
+                    問題.append(f'{pid} 関係図の下端が{下端}px'
+                                f'（強調枠を入れて{下端+張り}px）。'
+                                f'外枠の内側{内側の底()}pxに収まりません')
             continue
         段 = ページを組む(話データ, pid)
         if 段:
             下端 = 段[-1]['帯上端'] + 段[-1]['帯高']
-            if 下端 > 設定['キャンバス']['高さ']:
-                問題.append(f'{pid} 縦が{下端}pxで、{設定["キャンバス"]["高さ"]}pxに収まらない')
+            # 上は外周20pxを空けているので、下も同じだけ空ける。
+            # さらに強調枠はノードの外へ（すきま＋太さ）張り出す
+            張り = 設定['強調枠']['すきま'] + 設定['強調枠']['太さ']
+            if 下端 + 張り > 内側の底():
+                問題.append(f'{pid} 下端が{下端}px（強調枠を入れて{下端+張り}px）。'
+                            f'外枠の内側{内側の底()}pxに収まりません')
     if 問題:
         print(f'{"⚠" if 強行 else "✗"} 第{話番号}話 検算で{len(問題)}件の問題')
         for x in 問題:
@@ -963,7 +1081,20 @@ def 生成(話番号, 表だけ=False, 強行=False, 固定段階=False):
     出力 = os.path.join(ここ, '出力', 話番号)
     os.makedirs(出力, exist_ok=True)
     仕事 = 仕事を並べる(話データ)
-    一時 = os.path.join(ここ, '.html')
+
+    # 今回つくらないPNGが残っていると、編集ソフトで古い絵を並べてしまう。
+    # CLAUDE.md により削除はせず、ゴミ箱へ移す
+    いる = {w['名'] for w in 仕事}
+    余り = [x for x in os.listdir(出力) if x.endswith('.png') and x not in いる]
+    if 余り:
+        ゴミ箱 = os.path.join(ここ, '出力', '_ゴミ箱', 話番号,
+                              time.strftime('%Y%m%d_%H%M%S'))
+        os.makedirs(ゴミ箱, exist_ok=True)
+        for x in 余り:
+            _sh.move(os.path.join(出力, x), os.path.join(ゴミ箱, x))
+        print(f'  今回つくらない{len(余り)}枚をゴミ箱へ移しました：{ゴミ箱}')
+    # 作業用HTMLは話ごとに分けて残す（どのHTMLからどのPNGが出たか追える）
+    一時 = os.path.join(ここ, '.html', 話番号)
     os.makedirs(一時, exist_ok=True)
     書体css = 書体のCSS(話データ)
     指示 = []
@@ -981,7 +1112,7 @@ def 生成(話番号, 表だけ=False, 強行=False, 固定段階=False):
     subprocess.run(['node', os.path.join(ここ, '撮る.js'),
                     os.path.join(一時, '_指示.json')], check=True)
     print(f'✓ 第{話番号}話 {len(仕事)}枚を {出力} に出力')
-    shutil.rmtree(一時)
+    # 作業用HTMLは .html/<話番号>/ に残す（消さない）
 
 
 def 段階を当てる(i):
@@ -1007,7 +1138,7 @@ def 収まる段階を探す(話データ):
         だめ = 字数を検算する(話データ)
         for pid in 話データ['ページ']:
             段 = ページを組む(話データ, pid)
-            if 段 and 段[-1]['帯上端'] + 段[-1]['帯高'] > 設定['キャンバス']['高さ']:
+            if 段 and 段[-1]['帯上端'] + 段[-1]['帯高'] > 内側の底():
                 だめ.append(pid)
         if not だめ:
             return i
@@ -1022,7 +1153,8 @@ if __name__ == '__main__':
     for a in sys.argv:
         if a.startswith('--段階='):
             段階を当てる(int(a.split('=')[1])); 固定段階 = True
-    話 = 引数 or [f'{i:02d}' for i in range(1, 16)
-                  if os.path.exists(os.path.join(ここ, 'データ', f'{i:02d}.json'))]
+    import glob as _g
+    話 = 引数 or sorted(os.path.splitext(os.path.basename(p))[0]
+                        for p in _g.glob(os.path.join(ここ, 'データ', '*.json')))
     for t in 話:
         生成(t, 表だけ, 強行, 固定段階)
