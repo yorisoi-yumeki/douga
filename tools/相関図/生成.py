@@ -30,10 +30,14 @@ def 字を集める(話データ):
     for 名, v in 話データ['ノード'].items():
         字 |= set(名) | set(v.get('小') or '')
     for p in 話データ['ページ'].values():
-        for 段 in p['段']:
+        for 段 in p.get('段', []):
             字 |= set(段.get('帯') or '')
             for nd in 段['ノード']:
                 字 |= set(nd.get('サブ') or '')
+        for x in p.get('配置', []):            # 関係図
+            字 |= set(x.get('サブ') or '')
+        for r in p.get('関係', []):
+            字 |= set(r.get('札') or '')
     return ''.join(sorted(字))
 
 
@@ -244,7 +248,7 @@ def 字数を検算する(話データ):
     問題 = []
     行数 = {}   # ノード名 → そのノードが置かれる n の最大値（＝最も狭い幅）
     for ページ, p in 話データ['ページ'].items():
-        for 段 in p['段']:
+        for 段 in p.get('段', []):
             n = len(段['ノード'])
             for nd in 段['ノード']:
                 行数[nd['名']] = max(行数.get(nd['名'], 0), n)
@@ -263,7 +267,7 @@ def 字数を検算する(話データ):
         if 小 and len(小) > (規格['幅'] // 規格['漢字']) * 小の行:
             問題.append(f'小さい行「{小}」{len(小)}字 > n={n} の上限{規格["幅"]//規格["漢字"]}字')
     for ページ, p in 話データ['ページ'].items():
-        for 段 in p['段']:
+        for 段 in p.get('段', []):
             n = len(段['ノード'])
             規格 = 幅表()[n]
             上限 = 規格['幅'] // 規格['サブ']
@@ -278,7 +282,7 @@ def 縦の検算(話データ):
     """縦書きのときは「幅に何字入るか」ではなく「縦に収まるか」を見る"""
     問題 = []
     for ページ, p in 話データ['ページ'].items():
-        for 段 in p['段']:
+        for 段 in p.get('段', []):
             n = len(段['ノード'])
             幅 = 幅を検算する(n)
             規格 = 縦の規格(幅, [x['名'] for x in 段['ノード']],
@@ -370,6 +374,8 @@ def 段の配置(段, 帯上端, 線あり, 話データ=None):
 
 def ページを組む(話データ, ページid):
     p = 話データ['ページ'][ページid]
+    if p.get('方式') == '関係図':
+        return []
     y = 設定['キャンバス']['外周']
     if 設定['キャンバス'].get('縦の寄せ') == '中央寄せ' and p['段']:
         # 先に全体の高さを測ってから、上下の余白が等しくなる位置から始める
@@ -667,6 +673,145 @@ body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;over
 </body></html>'''
 
 
+
+
+# ──────────────── 関係図（漫画式）────────────────
+def 関係図を組む(話データ, ページid):
+    """漫画のキャラ相関図のように、格子に置いて関係に札をつける。
+    帯（世代）は使わない。配置は データ の 行・列 で指定する。"""
+    p = 話データ['ページ'][ページid]
+    地 = 地寸法(); 外周 = 設定['キャンバス']['外周']; 余白 = 設定['ノード']['余白']
+    列数 = max(x['列'] for x in p['配置']) + 1
+    行数 = max(x['行'] for x in p['配置']) + 1
+    幅 = int((図幅() - 外周 * 2 - 余白 * (列数 - 1)) / 列数)
+    札高 = 設定['関係図']['札の字'] + 10
+    # 行ごとの高さ＝その行のノードが必要とする高さの最大
+    高さ = {}
+    for r in range(行数):
+        組 = [x for x in p['配置'] if x['行'] == r]
+        if not 組: 高さ[r] = 0; continue
+        規格 = 縦の規格(幅, [x['名'] for x in 組],
+                        [話データ['ノード'][x['名']].get('小') or '' for x in 組],
+                        [x.get('サブ') or '' for x in 組])
+        高さ[r] = 規格['高さ']
+    行間 = 設定['関係図']['行間']
+    中身 = sum(高さ.values()) + 行間 * (行数 - 1)
+    y0 = max(外周, (設定['キャンバス']['高さ'] - 中身) // 2)
+    置く = []
+    y = y0
+    for r in range(行数):
+        組 = sorted([x for x in p['配置'] if x['行'] == r], key=lambda x: x['列'])
+        規格 = 縦の規格(幅, [x['名'] for x in 組],
+                        [話データ['ノード'][x['名']].get('小') or '' for x in 組],
+                        [x.get('サブ') or '' for x in 組]) if 組 else None
+        for x in 組:
+            置く.append({**x, 'x': 外周 + x['列'] * (幅 + 余白), 'y': y,
+                         '幅': 幅, '高さ': 高さ[r], '規格': 規格, 'n': 列数})
+        y += 高さ[r] + 行間
+    return 置く, 幅
+
+
+def 関係図のHTML(話データ, ページid, 強調, 書体css):
+    p = 話データ['ページ'][ページid]
+    置く, 幅 = 関係図を組む(話データ, ページid)
+    地 = 地寸法(); 設 = 設定['関係図']; 強 = 設定['強調枠']
+    W = 図幅(); H = 設定['キャンバス']['高さ']
+    場所 = {x['名']: x for x in 置く}
+    部品 = []
+    # 関係の線と札
+    for rel in p.get('関係', []):
+        a, b = 場所.get(rel['a']), 場所.get(rel['b'])
+        if not a or not b: continue
+        色 = 設['線の色'].get(rel.get('種', 'その他'), 地['線'])
+        太 = 設['線の太さ']
+        if a['行'] == b['行']:
+            左, 右 = (a, b) if a['x'] < b['x'] else (b, a)
+            x0 = 左['x'] + 左['幅']; x1 = 右['x']
+            cy = 左['y'] + 左['高さ'] / 2
+            部品.append(f'<div class="関係線" style="left:{x0}px;top:{cy-太/2}px;'
+                        f'width:{x1-x0}px;height:{太}px;background:{色}"></div>')
+            lx, ly = (x0 + x1) / 2, cy
+        else:
+            上, 下 = (a, b) if a['y'] < b['y'] else (b, a)
+            ux = 上['x'] + 上['幅'] / 2; dx = 下['x'] + 下['幅'] / 2
+            y0 = 上['y'] + 上['高さ']; y1 = 下['y']
+            my = (y0 + y1) / 2
+            部品.append(f'<div class="関係線" style="left:{ux-太/2}px;top:{y0}px;'
+                        f'width:{太}px;height:{my-y0}px;background:{色}"></div>')
+            if abs(ux - dx) > 1:
+                部品.append(f'<div class="関係線" style="left:{min(ux,dx)}px;top:{my-太/2}px;'
+                            f'width:{abs(ux-dx)}px;height:{太}px;background:{色}"></div>')
+            部品.append(f'<div class="関係線" style="left:{dx-太/2}px;top:{my}px;'
+                        f'width:{太}px;height:{y1-my}px;background:{色}"></div>')
+            lx, ly = (ux + dx) / 2, my
+        部品.append(f'<div class="関係札" style="left:{lx}px;top:{ly}px;'
+                    f'font-size:{設["札の字"]}px;background:{色}">{rel["札"]}</div>')
+    # ノード
+    for nd in 置く:
+        系 = 設定['系統'][話データ['ノード'][nd['名']]['系統']]
+        規格 = nd['規格']; 退場 = nd.get('退場', False)
+        塗り = 地['背景'] if 退場 else 系['塗り']
+        文字色 = 系['輪郭'] if 退場 else 系['文字']
+        部品.append(
+            f'<div class="ノード" style="left:{nd["x"]}px;top:{nd["y"]}px;'
+            f'width:{nd["幅"]}px;height:{nd["高さ"]}px;background:{塗り};'
+            f'border:{設定["ノード"]["輪郭線"]}px solid {系["輪郭"]};'
+            f'border-radius:{設定["ノード"]["角丸"]}px"></div>')
+        名 = nd['名']; 小 = 話データ['ノード'][名].get('小')
+        字 = 規格['字']; 漢 = 規格['漢字']
+        名列 = 縦の列数(len(名), 規格['列上限'], 名前=True)
+        小列 = 縦の列数(len(小 or ''), 規格['列上限'] + 2) if 小 else 0
+        名幅 = 名列 * 字; 小幅 = 小列 * 漢
+        右端 = nd['x'] + (nd['幅'] + 名幅 + (規格['すきま'] + 小幅 if 小 else 0)) / 2
+        名x = 右端 - 名幅
+        上 = nd['y'] + 規格['上余白']
+        部品.append(f'<div class="縦名" style="left:{名x}px;top:{上}px;width:{名幅}px;'
+                    f'height:{-(-len(名)//名列)*字}px;font-size:{字}px;color:{文字色}">{名}</div>')
+        if 小:
+            部品.append(f'<div class="縦小" style="left:{名x-規格["すきま"]-小幅}px;top:{上}px;'
+                        f'width:{小幅}px;height:{-(-len(小)//小列)*漢}px;'
+                        f'font-size:{漢}px;color:{文字色}">{小}</div>')
+        役 = nd.get('サブ')
+        if 役:
+            tz = 規格['役割字']; th = tz + 12
+            部品.append(f'<div class="重ねタグ" style="left:{nd["x"]+28}px;'
+                        f'top:{nd["y"]-th/2}px;height:{th}px;font-size:{tz}px;'
+                        f'color:{系["塗り"] if not 退場 else 地["背景"]};background:{文字色};'
+                        f'border:2px solid {系["塗り"] if not 退場 else 地["背景"]}">{役}</div>')
+    for nd in 置く:
+        if nd['名'] in 強調:
+            す = 強['すきま']; 太 = 強['太さ']
+            部品.append(
+                f'<div class="強調" style="left:{nd["x"]-す-太}px;top:{nd["y"]-す-太}px;'
+                f'width:{nd["幅"]+2*(す+太)}px;height:{nd["高さ"]+2*(す+太)}px;'
+                f'border:{太}px solid {強["色"]};'
+                f'border-radius:{設定["ノード"]["角丸"]+す+太}px"></div>')
+    書 = 設定['書体']; g, m = 書['ゴシック'], 書['明朝']
+    return f'''<!doctype html><html lang="ja"><head><meta charset="utf-8">
+<style>
+{書体css}
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;overflow:hidden;
+     font-family:'{g}',sans-serif;-webkit-font-smoothing:antialiased}}
+.外枠{{position:absolute;inset:0;border:{設定["キャンバス"]["外周"]}px solid {地["外枠"]}}}
+.ノード{{position:absolute}}
+.関係線{{position:absolute}}
+.関係札{{position:absolute;transform:translate(-50%,-50%);color:#fff;
+     padding:5px 12px;border-radius:6px;line-height:1;white-space:nowrap;
+     font-weight:{書["サブ太さ"]};z-index:8}}
+.縦名{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
+     font-weight:{書["神名太さ"]};line-height:1}}
+.縦小{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
+     font-family:'{m}',serif;font-weight:{書["漢字太さ"]};line-height:1}}
+.重ねタグ{{position:absolute;border-radius:8px;padding:4px 10px;line-height:1;
+     font-weight:{書["サブ太さ"]};white-space:nowrap;z-index:6;
+     display:flex;align-items:center}}
+.強調{{position:absolute;z-index:10}}
+</style></head><body>
+<div class="外枠"></div>
+{chr(10).join(部品)}
+</body></html>'''
+
 # ────────────────────────── 出力 ──────────────────────────
 def 仕事を並べる(話データ):
     仕事 = []
@@ -723,7 +868,7 @@ def 生成(話番号, 表だけ=False, 強行=False, 固定段階=False):
 
     問題 = 字数を検算する(話データ)
     for pid in 話データ['ページ']:
-        段数 = [len(s['ノード']) for s in 話データ['ページ'][pid]['段']]
+        段数 = [len(s['ノード']) for s in 話データ['ページ'][pid].get('段', [])]
         if 段数:
             縦 = 縦を検算する(段数)
             if 縦 > 設定['キャンバス']['高さ']:
@@ -731,6 +876,14 @@ def 生成(話番号, 表だけ=False, 強行=False, 固定段階=False):
         if len(段数) > 3:
             問題.append(f'{pid} 帯が{len(段数)}段（上限3段・仕様書3節）')
     for pid in 話データ['ページ']:
+        if 話データ['ページ'][pid].get('方式') == '関係図':
+            置く, _ = 関係図を組む(話データ, pid)
+            if 置く:
+                下端 = max(x['y'] + x['高さ'] for x in 置く)
+                if 下端 > 設定['キャンバス']['高さ']:
+                    問題.append(f'{pid} 関係図の縦が{下端}pxで、'
+                                f'{設定["キャンバス"]["高さ"]}pxに収まらない')
+            continue
         段 = ページを組む(話データ, pid)
         if 段:
             下端 = 段[-1]['帯上端'] + 段[-1]['帯高']
@@ -759,8 +912,11 @@ def 生成(話番号, 表だけ=False, 強行=False, 固定段階=False):
     指示 = []
     for w in 仕事:
         h = os.path.join(一時, w['名'].replace('.png', '.html'))
+        作る = (関係図のHTML
+                if 話データ['ページ'][w['ページ']].get('方式') == '関係図'
+                else HTMLを作る)
         open(h, 'w', encoding='utf-8').write(
-            HTMLを作る(話データ, w['ページ'], w['強調'], 書体css))
+            作る(話データ, w['ページ'], w['強調'], 書体css))
         指示.append({'html': h, 'png': os.path.join(出力, w['名'])})
     json.dump({'指示': 指示, '幅': 図幅(),
                '高さ': 設定['キャンバス']['高さ'], '倍率': 設定['キャンバス']['倍率']},
