@@ -34,6 +34,9 @@ def 字を集める(話データ):
             字 |= set(段.get('帯') or '')
             for nd in 段['ノード']:
                 字 |= set(nd.get('サブ') or '')
+        for 段 in p.get('段', []):
+            for r in 段.get('関係', []):
+                字 |= set(r.get('札') or '')
         for x in p.get('配置', []):            # 関係図
             字 |= set(x.get('サブ') or '')
         for r in p.get('関係', []):
@@ -348,6 +351,8 @@ def 段の配置(段, 帯上端, 線あり, 話データ=None):
          else 設定['帯高さ']['線なし前']
     ノード上端 = 帯上端 + 前
     帯高 = 前 + 高さ + 設定['帯高さ']['下余白'] + 規格.get('帯の追加', 0)
+    if any(r.get('表現', '囲い') == '囲い' for r in 段.get('関係', [])):
+        帯高 += 設定['関係図']['札の字'] + 24   # 囲いの札のぶん
 
     地 = 地寸法()
     ずれ = 地['帯ラベル幅'] if 地.get('帯ラベル位置') == '左' else 0
@@ -392,6 +397,7 @@ def ページを組む(話データ, ページid):
         置く, 帯高, ノード上端 = 段の配置(段, y, 線あり, 話データ)
         段リスト.append({'帯上端': y, '帯高': 帯高, 'ノード': 置く,
                          'ラベル': 段.get('帯'), '夫婦': 段.get('夫婦', []),
+                         '関係': 段.get('関係', []),
                          'ノード上端': ノード上端, '線あり': 線あり})
         y += 帯高 + 地寸法()['帯間']
     return 段リスト
@@ -435,8 +441,35 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
 
     # 線（ノードより先に描いて下に敷く）
     for i, 段 in enumerate(段リスト):
+        # 段に書かれた「関係」を、色つきの囲い／線＋札で描く
+        設 = 設定['関係図']
+        for rel in 段.get('関係', []):
+            na = next((x for x in 段['ノード'] if x['名'] == rel['a']), None)
+            nb = next((x for x in 段['ノード'] if x['名'] == rel['b']), None)
+            if not na or not nb:
+                continue
+            色 = 設['線の色'].get(rel.get('種', 'その他'), 地['線'])
+            if rel.get('表現', '囲い') == '囲い':
+                x0 = min(na['x'], nb['x']); x1 = max(na['x'] + na['幅'], nb['x'] + nb['幅'])
+                y0 = min(na['y'], nb['y']); y1 = max(na['y'] + na['高さ'], nb['y'] + nb['高さ'])
+                外 = 設定['強調枠']['すきま'] + 設定['強調枠']['太さ'] + 6
+                部品.append(f'<div class="関係囲い" style="left:{x0-外}px;top:{y0-外}px;'
+                            f'width:{x1-x0+外*2}px;height:{y1-y0+外*2}px;'
+                            f'border-color:{色}"></div>')
+                部品.append(f'<div class="関係札" style="left:{(x0+x1)/2}px;top:{y1+14}px;'
+                            f'font-size:{設["札の字"]}px;background:{色}">{rel["札"]}</div>')
+            else:
+                左, 右 = (na, nb) if na['x'] < nb['x'] else (nb, na)
+                xa = 左['x'] + 左['幅']; xb = 右['x']
+                cy = 左['y'] + 左['高さ'] * 0.72
+                部品.append(f'<div class="関係線" style="left:{xa}px;top:{cy}px;'
+                            f'width:{xb-xa}px;height:{設["線の太さ"]}px;background:{色}"></div>')
+                部品.append(f'<div class="関係札" style="left:{(xa+xb)/2}px;'
+                            f'top:{cy-設["札の字"]-6}px;'
+                            f'font-size:{設["札の字"]}px;background:{色}">{rel["札"]}</div>')
+
         やり方 = 地.get('夫婦の見せ方', '二重線')
-        for a, b in 段['夫婦']:
+        for a, b in 段.get('夫婦', []):
             na = next(x for x in 段['ノード'] if x['名'] == a)
             nb = next(x for x in 段['ノード'] if x['名'] == b)
             左 = min(na['x'] + na['幅'], nb['x'] + nb['幅'])
@@ -649,6 +682,11 @@ body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;over
 .サブ{{position:absolute;text-align:center;font-weight:{書体["サブ太さ"]};line-height:1}}
 .強調{{position:absolute;z-index:10}}
 .夫婦囲い{{position:absolute;border:3px solid {地["線"]};border-radius:24px}}
+.関係囲い{{position:absolute;border:4px solid;border-radius:26px;z-index:4}}
+.関係線{{position:absolute;z-index:4}}
+.関係札{{position:absolute;transform:translate(-50%,-50%);color:#fff;
+     padding:5px 12px;border-radius:6px;line-height:1;white-space:nowrap;
+     font-weight:{書体["サブ太さ"]};z-index:9}}
 .帯ラベル縦{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
      font-size:{地["帯ラベル字"]}px;color:{地["帯ラベル色"]};
      font-weight:{書体["帯ラベル太さ"]};line-height:1}}
