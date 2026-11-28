@@ -84,6 +84,27 @@ def 地寸法():
     return 地
 
 
+def 縦書きか():
+    return 設定.get('書字方向') == '縦書き'
+
+
+def 縦の規格(幅, 名の最長, 小の最長):
+    """縦書き：神名を縦1列にする。カードの高さは、いちばん長い神名で決まる。
+    漢字・読みは神名の左に縦に添える（縦書きは右の列から読む）。"""
+    t = 設定['縦書き']
+    字 = 設定['ノード']['神名字サイズ']
+    漢 = 32 if 幅 >= 200 else (26 if 幅 >= 150 else 22)
+    サ = 26 if 幅 >= 200 else 22
+    名高 = 名の最長 * 字
+    小高 = 小の最長 * 漢
+    中身 = max(名高, 小高)
+    return {'幅': 幅, '高さ': t['上余白'] + 中身 + t['サブ上'] + サ + t['下余白'],
+            '中央寄せ': False, '縦': True, '字': 字, '漢字': 漢, 'サブ': サ,
+            '上余白': t['上余白'], 'すきま': t['名と漢字のすきま'],
+            '中身高': 中身, 'サブy': t['上余白'] + 中身 + t['サブ上'] + サ,
+            '神名字数': 99}
+
+
 def 規格を作る(幅, 神名行, 小行):
     """カードの幅と行数から、高さと文字のベースラインを決める。
     1行48px。神名は最大3行、小さい行（漢字・読み）は最大2行まで折る。
@@ -156,6 +177,8 @@ def 字数を検算する(話データ):
             n = len(段['ノード'])
             for nd in 段['ノード']:
                 行数[nd['名']] = max(行数.get(nd['名'], 0), n)
+    if 縦書きか():
+        return 縦の検算(話データ)
     for 名, n in 行数.items():
         規格 = 幅表()[n]
         上限行字 = 規格['神名字数']
@@ -180,12 +203,32 @@ def 字数を検算する(話データ):
     return 問題
 
 
+def 縦の検算(話データ):
+    """縦書きのときは「幅に何字入るか」ではなく「縦に収まるか」を見る"""
+    問題 = []
+    for ページ, p in 話データ['ページ'].items():
+        for 段 in p['段']:
+            n = len(段['ノード'])
+            幅 = 幅を検算する(n)
+            規格 = 縦の規格(幅, max(len(x['名']) for x in 段['ノード']),
+                          max((len(話データ['ノード'][x['名']].get('小') or '')
+                               for x in 段['ノード']), default=0))
+            要る = 規格['字'] + 規格['すきま'] + 規格['漢字']
+            if 要る > 幅:
+                問題.append(f'{ページ} 横に{要る}px要るが幅{幅}px（神名＋漢字の2列）')
+            for nd in 段['ノード']:
+                サブ = nd.get('サブ')
+                if サブ and len(サブ) > 幅 // 規格['サブ']:
+                    問題.append(f'{ページ} サブ「{サブ}」{len(サブ)}字 > 上限{幅//規格["サブ"]}字')
+    return 問題
+
+
 def 縦を検算する(段数リスト):
     """仕様書3節「縦の検算」。帯の高さを積み上げて1080pxに収まるか"""
     地 = 地寸法(); 帯 = 設定['帯高さ']
     合計 = 設定['キャンバス']['外周']
     for i, n in enumerate(段数リスト):
-        高さ = 幅表()[n]['高さ']
+        高さ = 幅表()[n]['高さ'] if not 縦書きか() else 0
         前 = 帯['線なし前'] if i == 0 else 帯['線あり前'] + 地['縦線']
         合計 += 前 + 高さ + 帯['下余白']
         if i < len(段数リスト) - 1:
@@ -200,7 +243,12 @@ def 段の配置(段, 帯上端, 線あり, 話データ=None):
     （横を狭めたぶん、縦に伸ばす）。"""
     n = len(段['ノード'])
     幅 = 幅を検算する(n)
-    if 図幅() == 設定['キャンバス']['幅'] or 話データ is None:
+    if 縦書きか() and 話データ is not None:
+        名長 = max(len(nd['名']) for nd in 段['ノード'])
+        小長 = max((len(話データ['ノード'][nd['名']].get('小') or '')
+                    for nd in 段['ノード']), default=0)
+        規格 = 縦の規格(幅, 名長, 小長)
+    elif 図幅() == 設定['キャンバス']['幅'] or 話データ is None:
         規格 = 幅表()[n]
     else:
         基 = 幅表()[n]
@@ -328,6 +376,31 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
                 f'width:{nd["幅"]}px;height:{nd["高さ"]}px;background:{塗り};'
                 f'border:{設定["ノード"]["輪郭線"]}px solid {系["輪郭"]};'
                 f'border-radius:{設定["ノード"]["角丸"]}px"></div>')
+            if 規格.get('縦'):
+                名 = nd['名']
+                小 = 話データ['ノード'][nd['名']].get('小')
+                字 = 規格['字']; 漢 = 規格['漢字']
+                幅合計 = 字 + (規格['すきま'] + 漢 if 小 else 0)
+                右端 = nd['x'] + (nd['幅'] + 幅合計) / 2       # 神名は右の列
+                名x = 右端 - 字
+                部品.append(
+                    f'<div class="縦名" style="left:{名x}px;top:{nd["y"]+規格["上余白"]}px;'
+                    f'width:{字}px;height:{規格["中身高"]}px;font-size:{字}px;'
+                    f'color:{文字色}">{名}</div>')
+                if 小:
+                    部品.append(
+                        f'<div class="縦小" style="left:{名x-規格["すきま"]-漢}px;'
+                        f'top:{nd["y"]+規格["上余白"]}px;width:{漢}px;'
+                        f'height:{規格["中身高"]}px;font-size:{漢}px;'
+                        f'color:{文字色}">{小}</div>')
+                サブ = nd.get('サブ')
+                if サブ:
+                    sz = 規格['サブ']
+                    部品.append(
+                        f'<div class="サブ" style="left:{nd["x"]}px;'
+                        f'top:{nd["y"]+規格["サブy"]-sz}px;width:{nd["幅"]}px;'
+                        f'height:{sz}px;font-size:{sz}px;color:{文字色}">{サブ}</div>')
+                continue
             行 = 折る(nd['名'], 規格, nd['n'])
             字 = 設定['ノード']['神名字サイズ']
             if len(行) == 1:
@@ -391,6 +464,11 @@ body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;over
      font-weight:{書体["漢字太さ"]};line-height:1}}
 .サブ{{position:absolute;text-align:center;font-weight:{書体["サブ太さ"]};line-height:1}}
 .強調{{position:absolute;z-index:10}}
+.縦名{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
+     font-weight:{書体["神名太さ"]};line-height:1;letter-spacing:0;
+     font-feature-settings:"palt" 0}}
+.縦小{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
+     font-family:'{m}',serif;font-weight:{書体["漢字太さ"]};line-height:1}}
 </style></head><body>
 <div class="外枠"></div>
 {chr(10).join(部品)}
@@ -452,6 +530,12 @@ def 生成(話番号, 表だけ=False):
                 問題.append(f'{pid} 縦が{縦}px（上限{設定["キャンバス"]["高さ"]}px）')
         if len(段数) > 3:
             問題.append(f'{pid} 帯が{len(段数)}段（上限3段・仕様書3節）')
+    for pid in 話データ['ページ']:
+        段 = ページを組む(話データ, pid)
+        if 段:
+            下端 = 段[-1]['帯上端'] + 段[-1]['帯高']
+            if 下端 > 設定['キャンバス']['高さ']:
+                問題.append(f'{pid} 縦が{下端}pxで、{設定["キャンバス"]["高さ"]}pxに収まらない')
     if 問題:
         print(f'✗ 第{話番号}話 検算で{len(問題)}件の問題')
         for x in 問題:
