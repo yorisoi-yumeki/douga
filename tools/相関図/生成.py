@@ -113,7 +113,7 @@ def 縦に割る(名, 列数):
     return 名
 
 
-def 縦の規格(幅, 名々, 小々):
+def 縦の規格(幅, 名々, 小々, 役々=None):
     """縦書き：神名を縦に置く。長い名は2列に折る（右の列から読む）。
 
     ⚠ 段の高さは「いちばん長い名前」ではなく、**1件ずつ高さを出して最大を取る**。
@@ -127,6 +127,8 @@ def 縦の規格(幅, 名々, 小々):
     漢 = 32 if 幅 >= 200 else (26 if 幅 >= 150 else 22)
     サ = 26 if 幅 >= 200 else 22
     列上限 = t.get('1列の最大字数', 6)
+    位置 = t.get('役割の位置', '下')
+    役字 = t.get('役割の字', 22)
 
     def 高さ(語, 文字):
         c = 縦の列数(len(語), 列上限 if 文字 == 字 else 列上限 + 2)
@@ -135,12 +137,20 @@ def 縦の規格(幅, 名々, 小々):
     名高 = max((高さ(n, 字) for n in 名々 if n), default=0)
     小高 = max((高さ(k, 漢) for k in 小々 if k), default=0)
     中身 = max(名高, 小高)
+    if 位置 == '左列':
+        役高 = max((高さ(r, 役字) for r in (役々 or []) if r), default=0)
+        中身 = max(中身, 役高)
     名列 = max((縦の列数(len(n), 列上限) for n in 名々 if n), default=1)
     小列 = max((縦の列数(len(k), 列上限 + 2) for k in 小々 if k), default=0)
-    return {'幅': 幅, '高さ': t['上余白'] + 中身 + t['サブ上'] + サ + t['下余白'],
+    下の分 = (t['サブ上'] + サ) if 位置 == '下' else 0
+    帯の追加 = (役字 + 10) if 位置 == '枠外下' else 0
+    上の分 = (役字 + 10) if 位置 == '上タグ' else 0
+    return {'幅': 幅, '高さ': t['上余白'] + 上の分 + 中身 + 下の分 + t['下余白'],
             '中央寄せ': False, '縦': True, '字': 字, '漢字': 漢, 'サブ': サ,
             '上余白': t['上余白'], 'すきま': t['名と漢字のすきま'],
-            '中身高': 中身, 'サブy': t['上余白'] + 中身 + t['サブ上'] + サ,
+            '中身高': 中身, 'サブy': t['上余白'] + 上の分 + 中身 + t['サブ上'] + サ,
+            '役割位置': 位置, '役割字': 役字, '役割すきま': t.get('役割のすきま', 8),
+            '上の分': 上の分, '帯の追加': 帯の追加,
             '名列': 名列, '小列': 小列, '列上限': 列上限, '神名字数': 99}
 
 
@@ -266,15 +276,20 @@ def 縦の検算(話データ):
             幅 = 幅を検算する(n)
             規格 = 縦の規格(幅, [x['名'] for x in 段['ノード']],
                           [話データ['ノード'][x['名']].get('小') or ''
-                           for x in 段['ノード']])
+                           for x in 段['ノード']],
+                          [x.get('サブ') or '' for x in 段['ノード']])
             要る = (規格['名列'] * 規格['字'] + 規格['すきま']
                     + 規格['小列'] * 規格['漢字'])
+            if 規格['役割位置'] == '左列':
+                役最長 = max((len(x.get('サブ') or '') for x in 段['ノード']), default=0)
+                要る += 規格['役割すきま'] + 縦の列数(役最長, 規格['列上限'] + 3) * 規格['役割字']
             if 要る > 幅:
                 問題.append(f'{ページ} 横に{要る}px要るが幅{幅}px（神名＋漢字の2列）')
-            for nd in 段['ノード']:
-                サブ = nd.get('サブ')
-                if サブ and len(サブ) > 幅 // 規格['サブ']:
-                    問題.append(f'{ページ} サブ「{サブ}」{len(サブ)}字 > 上限{幅//規格["サブ"]}字')
+            if 規格['役割位置'] == '下':
+                for nd in 段['ノード']:
+                    サブ = nd.get('サブ')
+                    if サブ and len(サブ) > 幅 // 規格['サブ']:
+                        問題.append(f'{ページ} サブ「{サブ}」{len(サブ)}字 > 上限{幅//規格["サブ"]}字')
     return 問題
 
 
@@ -301,7 +316,8 @@ def 段の配置(段, 帯上端, 線あり, 話データ=None):
     if 縦書きか() and 話データ is not None:
         名々 = [nd['名'] for nd in 段['ノード']]
         小々 = [話データ['ノード'][nd['名']].get('小') or '' for nd in 段['ノード']]
-        規格 = 縦の規格(幅, 名々, 小々)
+        役々 = [nd.get('サブ') or '' for nd in 段['ノード']]
+        規格 = 縦の規格(幅, 名々, 小々, 役々)
         規格['中央寄せ'] = (n == 1)   # 1個だけの行は幹の真下に中央寄せ（仕様書3節）
     elif 図幅() == 設定['キャンバス']['幅'] or 話データ is None:
         規格 = 幅表()[n]
@@ -320,7 +336,7 @@ def 段の配置(段, 帯上端, 線あり, 話データ=None):
     前 = 設定['帯高さ']['線あり前'] + (地寸法()['縦線'] if 線あり else 0) if 線あり \
          else 設定['帯高さ']['線なし前']
     ノード上端 = 帯上端 + 前
-    帯高 = 前 + 高さ + 設定['帯高さ']['下余白']
+    帯高 = 前 + 高さ + 設定['帯高さ']['下余白'] + 規格.get('帯の追加', 0)
 
     地 = 地寸法()
     ずれ = 地['帯ラベル幅'] if 地.get('帯ラベル位置') == '左' else 0
@@ -443,34 +459,58 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
                 名 = nd['名']
                 小 = 話データ['ノード'][nd['名']].get('小')
                 字 = 規格['字']; 漢 = 規格['漢字']
+                役 = nd.get('サブ') or ''
+                位置 = 規格['役割位置']; 役字 = 規格['役割字']
                 名列 = 縦の列数(len(名), 規格['列上限'])
                 名 = 縦に割る(名, 名列)
                 小列 = 縦の列数(len(小 or ''), 規格['列上限'] + 2) if 小 else 0
                 名幅 = 名列 * 字; 小幅 = 小列 * 漢
-                幅合計 = 名幅 + (規格['すきま'] + 小幅 if 小 else 0)
+                役列 = 縦の列数(len(役), 規格['列上限'] + 3) if (役 and 位置 == '左列') else 0
+                役幅 = 役列 * 役字
+                幅合計 = (名幅 + (規格['すきま'] + 小幅 if 小 else 0)
+                          + (規格['役割すきま'] + 役幅 if 役列 else 0))
                 右端 = nd['x'] + (nd['幅'] + 幅合計) / 2       # 神名は右の列
                 名x = 右端 - 名幅
                 # 枠の高さは、そのノードが実際に必要とする高さにする。
                 # 段の最大高さを当てると、短い名前が折り返して隣の列に重なる
                 名高 = -(-len(nd['名']) // 名列) * 字
+                上 = nd['y'] + 規格['上余白'] + 規格['上の分']
                 部品.append(
-                    f'<div class="縦名" style="left:{名x}px;top:{nd["y"]+規格["上余白"]}px;'
+                    f'<div class="縦名" style="left:{名x}px;top:{上}px;'
                     f'width:{名幅}px;height:{名高}px;font-size:{字}px;'
                     f'color:{文字色}">{名}</div>')
                 if 小:
                     小高 = -(-len(小) // 小列) * 漢
                     部品.append(
                         f'<div class="縦小" style="left:{名x-規格["すきま"]-小幅}px;'
-                        f'top:{nd["y"]+規格["上余白"]}px;width:{小幅}px;'
+                        f'top:{上}px;width:{小幅}px;'
                         f'height:{小高}px;font-size:{漢}px;'
                         f'color:{文字色}">{小}</div>')
-                サブ = nd.get('サブ')
-                if サブ:
-                    sz = 規格['サブ']
-                    部品.append(
-                        f'<div class="サブ" style="left:{nd["x"]}px;'
-                        f'top:{nd["y"]+規格["サブy"]-sz}px;width:{nd["幅"]}px;'
-                        f'height:{sz}px;font-size:{sz}px;color:{文字色}">{サブ}</div>')
+                if 役:
+                    if 位置 == '左列':
+                        rx = 名x - (規格['すきま'] + 小幅 if 小 else 0) - 規格['役割すきま'] - 役幅
+                        部品.append(
+                            f'<div class="縦役" style="left:{rx}px;top:{上}px;'
+                            f'width:{役幅}px;height:{-(-len(役)//役列)*役字}px;'
+                            f'font-size:{役字}px;color:{文字色}">{役}</div>')
+                    elif 位置 == '枠外下':
+                        sz = 規格['役割字']
+                        部品.append(
+                            f'<div class="サブ" style="left:{nd["x"]}px;'
+                            f'top:{nd["y"]+nd["高さ"]+8}px;width:{nd["幅"]}px;'
+                            f'height:{sz}px;font-size:{sz}px;color:{地["帯ラベル色"]}">{役}</div>')
+                    elif 位置 == '上タグ':
+                        部品.append(
+                            f'<div class="タグ" style="left:{nd["x"]+10}px;'
+                            f'top:{nd["y"]+8}px;height:{役字+8}px;'
+                            f'font-size:{役字}px;color:{系["塗り"] if not 退場 else 系["輪郭"]};'
+                            f'background:{文字色}">{役}</div>')
+                    else:
+                        sz = 規格['サブ']
+                        部品.append(
+                            f'<div class="サブ" style="left:{nd["x"]}px;'
+                            f'top:{nd["y"]+規格["サブy"]-sz}px;width:{nd["幅"]}px;'
+                            f'height:{sz}px;font-size:{sz}px;color:{文字色}">{サブ if False else 役}</div>')
                 continue
             行 = 折る(nd['名'], 規格, nd['n'])
             字 = 設定['ノード']['神名字サイズ']
@@ -541,6 +581,10 @@ body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;over
 .縦名{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
      font-weight:{書体["神名太さ"]};line-height:1;letter-spacing:0;
      font-feature-settings:"palt" 0}}
+.縦役{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
+     font-weight:{書体["サブ太さ"]};line-height:1;opacity:.85}}
+.タグ{{position:absolute;border-radius:4px;padding:3px 7px;line-height:1;
+     font-weight:{書体["サブ太さ"]};white-space:nowrap}}
 .縦小{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
      font-family:'{m}',serif;font-weight:{書体["漢字太さ"]};line-height:1}}
 </style></head><body>
