@@ -448,16 +448,19 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
             nb = next((x for x in 段['ノード'] if x['名'] == rel['b']), None)
             if not na or not nb:
                 continue
-            色 = 設['線の色'].get(rel.get('種', 'その他'), 地['線'])
+            配 = 設['関係の色'].get(rel.get('種', 'その他'),
+                                     設['関係の色']['その他'])
+            色 = 配['枠']
             if rel.get('表現', '囲い') == '囲い':
                 x0 = min(na['x'], nb['x']); x1 = max(na['x'] + na['幅'], nb['x'] + nb['幅'])
                 y0 = min(na['y'], nb['y']); y1 = max(na['y'] + na['高さ'], nb['y'] + nb['高さ'])
                 外 = 設定['強調枠']['すきま'] + 設定['強調枠']['太さ'] + 6
                 部品.append(f'<div class="関係囲い" style="left:{x0-外}px;top:{y0-外}px;'
                             f'width:{x1-x0+外*2}px;height:{y1-y0+外*2}px;'
-                            f'border-color:{色}"></div>')
+                            f'border-color:{色};background:{配["塗り"]}"></div>')
                 部品.append(f'<div class="関係札" style="left:{(x0+x1)/2}px;top:{y1+14}px;'
-                            f'font-size:{設["札の字"]}px;background:{色}">{rel["札"]}</div>')
+                            f'font-size:{設["札の字"]}px;background:{配["札"]}">'
+                            f'{rel["札"]}</div>')
             else:
                 左, 右 = (na, nb) if na['x'] < nb['x'] else (nb, na)
                 xa = 左['x'] + 左['幅']; xb = 右['x']
@@ -466,7 +469,8 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
                             f'width:{xb-xa}px;height:{設["線の太さ"]}px;background:{色}"></div>')
                 部品.append(f'<div class="関係札" style="left:{(xa+xb)/2}px;'
                             f'top:{cy-設["札の字"]-6}px;'
-                            f'font-size:{設["札の字"]}px;background:{色}">{rel["札"]}</div>')
+                            f'font-size:{設["札の字"]}px;background:{配["札"]}">'
+                            f'{rel["札"]}</div>')
 
         やり方 = 地.get('夫婦の見せ方', '二重線')
         for a, b in 段.get('夫婦', []):
@@ -674,15 +678,15 @@ body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;over
      {地["線"]} 0 8px,transparent 8px 16px)}}
 .点線縦{{position:absolute;background:repeating-linear-gradient(to bottom,
      {地["線"]} 0 8px,transparent 8px 16px)}}
-.ノード{{position:absolute}}
-.神名{{position:absolute;text-align:center;font-weight:{書体["神名太さ"]};line-height:1;
+.ノード{{position:absolute;z-index:2}}
+.神名{{position:absolute;z-index:3;text-align:center;font-weight:{書体["神名太さ"]};line-height:1;
      font-feature-settings:"palt" 0}}
 .小{{position:absolute;text-align:center;font-family:'{m}',serif;
      font-weight:{書体["漢字太さ"]};line-height:1}}
-.サブ{{position:absolute;text-align:center;font-weight:{書体["サブ太さ"]};line-height:1}}
+.サブ{{position:absolute;z-index:3;text-align:center;font-weight:{書体["サブ太さ"]};line-height:1}}
 .強調{{position:absolute;z-index:10}}
 .夫婦囲い{{position:absolute;border:3px solid {地["線"]};border-radius:24px}}
-.関係囲い{{position:absolute;border:4px solid;border-radius:26px;z-index:4}}
+.関係囲い{{position:absolute;border:4px solid;border-radius:26px;z-index:1}}
 .関係線{{position:absolute;z-index:4}}
 .関係札{{position:absolute;transform:translate(-50%,-50%);color:#fff;
      padding:5px 12px;border-radius:6px;line-height:1;white-space:nowrap;
@@ -690,7 +694,7 @@ body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;over
 .帯ラベル縦{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
      font-size:{地["帯ラベル字"]}px;color:{地["帯ラベル色"]};
      font-weight:{書体["帯ラベル太さ"]};line-height:1}}
-.縦名{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
+.縦名{{position:absolute;z-index:3;writing-mode:vertical-rl;text-orientation:upright;
      font-weight:{書体["神名太さ"]};line-height:1;letter-spacing:0;
      font-feature-settings:"palt" 0}}
 .縦役{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
@@ -703,7 +707,7 @@ body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;over
      font-weight:{書体["サブ太さ"]}}}
 .タグ{{position:absolute;border-radius:4px;padding:3px 7px;line-height:1;
      font-weight:{書体["サブ太さ"]};white-space:nowrap}}
-.縦小{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
+.縦小{{position:absolute;z-index:3;writing-mode:vertical-rl;text-orientation:upright;
      font-family:'{m}',serif;font-weight:{書体["漢字太さ"]};line-height:1}}
 </style></head><body>
 <div class="外枠"></div>
@@ -832,14 +836,14 @@ def 関係図のHTML(話データ, ページid, 強調, 書体css):
 body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;overflow:hidden;
      font-family:'{g}',sans-serif;-webkit-font-smoothing:antialiased}}
 .外枠{{position:absolute;inset:0;border:{設定["キャンバス"]["外周"]}px solid {地["外枠"]}}}
-.ノード{{position:absolute}}
+.ノード{{position:absolute;z-index:2}}
 .関係線{{position:absolute}}
 .関係札{{position:absolute;transform:translate(-50%,-50%);color:#fff;
      padding:5px 12px;border-radius:6px;line-height:1;white-space:nowrap;
      font-weight:{書["サブ太さ"]};z-index:8}}
-.縦名{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
+.縦名{{position:absolute;z-index:3;writing-mode:vertical-rl;text-orientation:upright;
      font-weight:{書["神名太さ"]};line-height:1}}
-.縦小{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
+.縦小{{position:absolute;z-index:3;writing-mode:vertical-rl;text-orientation:upright;
      font-family:'{m}',serif;font-weight:{書["漢字太さ"]};line-height:1}}
 .重ねタグ{{position:absolute;border-radius:8px;padding:4px 10px;line-height:1;
      font-weight:{書["サブ太さ"]};white-space:nowrap;z-index:6;
