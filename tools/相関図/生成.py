@@ -616,7 +616,7 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
                         部品.append(
                             f'<div class="サブ" style="left:{nd["x"]}px;'
                             f'top:{nd["y"]+規格["サブy"]-sz}px;width:{nd["幅"]}px;'
-                            f'height:{sz}px;font-size:{sz}px;color:{文字色}">{サブ if False else 役}</div>')
+                            f'height:{sz}px;font-size:{sz}px;color:{文字色}">{役}</div>')
                 continue
             行 = 折る(nd['名'], 規格, nd['n'])
             字 = 設定['ノード']['神名字サイズ']
@@ -681,7 +681,7 @@ body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;over
 .ノード{{position:absolute;z-index:2}}
 .神名{{position:absolute;z-index:3;text-align:center;font-weight:{書体["神名太さ"]};line-height:1;
      font-feature-settings:"palt" 0}}
-.小{{position:absolute;text-align:center;font-family:'{m}',serif;
+.小{{position:absolute;z-index:3;text-align:center;font-family:'{m}',serif;
      font-weight:{書体["漢字太さ"]};line-height:1}}
 .サブ{{position:absolute;z-index:3;text-align:center;font-weight:{書体["サブ太さ"]};line-height:1}}
 .強調{{position:absolute;z-index:10}}
@@ -697,7 +697,7 @@ body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;over
 .縦名{{position:absolute;z-index:3;writing-mode:vertical-rl;text-orientation:upright;
      font-weight:{書体["神名太さ"]};line-height:1;letter-spacing:0;
      font-feature-settings:"palt" 0}}
-.縦役{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
+.縦役{{position:absolute;z-index:3;writing-mode:vertical-rl;text-orientation:upright;
      font-weight:{書体["サブ太さ"]};line-height:1;opacity:.85}}
 .重ねタグ{{position:absolute;border-radius:{強["太さ"]}px;padding:4px 10px;
      line-height:1;font-weight:{書体["サブ太さ"]};white-space:nowrap;z-index:6;
@@ -705,7 +705,7 @@ body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;over
 .重ねタグ縦{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
      border-radius:{強["太さ"]}px;padding:6px 4px;line-height:1;z-index:6;
      font-weight:{書体["サブ太さ"]}}}
-.タグ{{position:absolute;border-radius:4px;padding:3px 7px;line-height:1;
+.タグ{{position:absolute;z-index:6;border-radius:4px;padding:3px 7px;line-height:1;
      font-weight:{書体["サブ太さ"]};white-space:nowrap}}
 .縦小{{position:absolute;z-index:3;writing-mode:vertical-rl;text-orientation:upright;
      font-family:'{m}',serif;font-weight:{書体["漢字太さ"]};line-height:1}}
@@ -903,8 +903,23 @@ def 生成(話番号, 表だけ=False, 強行=False, 固定段階=False):
     if 縦書きか() and not 固定段階:
         見つけた = 収まる段階を探す(話データ)
         if 見つけた is None:
-            段階を当てる(len(設定['詰める段階']) - 1)
-            print(f'⚠ 第{話番号}話 どの段階でも収まらない（いちばん詰めた設定で続行）')
+            # どの段階でも収まらない。実際にいちばん低くなる段階を測って選ぶ
+            # （段階の番号が大きいほど低いとは限らないため）
+            def 測る(i):
+                段階を当てる(i)
+                高 = 0
+                for pid in 話データ['ページ']:
+                    段 = ページを組む(話データ, pid)
+                    if 段:
+                        高 = max(高, 段[-1]['帯上端'] + 段[-1]['帯高'])
+                return 高
+            低い = min(range(len(設定['詰める段階'])), key=測る)
+            段階を当てる(低い)
+            print(f'⚠ 第{話番号}話 どの段階でも収まりません。'
+                  f'いちばん低い「{設定["詰める段階"][低い]["名"]}」'
+                  f'（{測る(低い)}px）で書き出します。'
+                  f'神名を短くするか、段を1つ減らしてください')
+            段階を当てる(低い)
         else:
             print(f'  詰める段階：{設定["詰める段階"][見つけた]["名"]}')
 
