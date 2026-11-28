@@ -431,19 +431,38 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
                             f'width:{右-左}px;height:{地["夫婦線太さ"]}px"></div>')
         if i + 1 < len(段リスト):
             下 = 段リスト[i + 1]
+            子 = [nd for nd in 下['ノード'] if nd.get('続柄', '子') == '子']
+            他 = [nd for nd in 下['ノード'] if nd.get('続柄', '子') != '子']
             # 幹：親の高さ中央（または夫婦線）から兄弟バーまで
             幹上 = 段['ノード'][0]['y'] + 段['ノード'][0]['高さ'] / 2
             バーy = 下['ノード上端'] - 地['縦線']
-            部品.append(f'<div class="線" style="left:{地["幹x"]-地["親子線太さ"]/2}px;top:{幹上}px;'
-                        f'width:{地["親子線太さ"]}px;height:{バーy-幹上}px"></div>')
-            中心 = [nd['x'] + nd['幅'] / 2 for nd in 下['ノード']]
-            左, 右 = min(中心 + [地['幹x']]), max(中心 + [地['幹x']])
-            if 右 > 左:
-                部品.append(f'<div class="線" style="left:{左}px;top:{バーy-地["親子線太さ"]/2}px;'
-                            f'width:{右-左}px;height:{地["親子線太さ"]}px"></div>')
-            for c in 中心:
-                部品.append(f'<div class="線" style="left:{c-地["親子線太さ"]/2}px;top:{バーy}px;'
-                            f'width:{地["親子線太さ"]}px;height:{地["縦線"]}px"></div>')
+            if any(nd.get('続柄', '子') == '子' for nd in 下['ノード']) or \
+               設定['地'].get('血縁でない線') == '点線':
+                部品.append(f'<div class="線" style="left:{地["幹x"]-地["親子線太さ"]/2}px;'
+                            f'top:{幹上}px;width:{地["親子線太さ"]}px;'
+                            f'height:{バーy-幹上}px"></div>')
+            中心 = [nd['x'] + nd['幅'] / 2 for nd in 子]
+            if 中心:
+                左, 右 = min(中心 + [地['幹x']]), max(中心 + [地['幹x']])
+                if 右 > 左:
+                    部品.append(f'<div class="線" style="left:{左}px;'
+                                f'top:{バーy-地["親子線太さ"]/2}px;'
+                                f'width:{右-左}px;height:{地["親子線太さ"]}px"></div>')
+                for c in 中心:
+                    部品.append(f'<div class="線" style="left:{c-地["親子線太さ"]/2}px;'
+                                f'top:{バーy}px;width:{地["親子線太さ"]}px;'
+                                f'height:{地["縦線"]}px"></div>')
+            # 血縁でないノード（続柄が「子」でないもの）の描き方
+            やり方 = 設定['地'].get('血縁でない線', 'なし')
+            if やり方 == '点線':
+                for nd in 他:
+                    c = nd['x'] + nd['幅'] / 2
+                    部品.append(f'<div class="点線" style="left:{min(c,地["幹x"])}px;'
+                                f'top:{バーy-地["親子線太さ"]/2}px;'
+                                f'width:{abs(c-地["幹x"])}px;height:{地["親子線太さ"]}px"></div>')
+                    部品.append(f'<div class="点線縦" style="left:{c-地["親子線太さ"]/2}px;'
+                                f'top:{バーy}px;width:{地["親子線太さ"]}px;'
+                                f'height:{地["縦線"]}px"></div>')
 
     # ノード
     for 段 in 段リスト:
@@ -594,6 +613,10 @@ body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;over
 .帯ラベル{{position:absolute;font-size:{地["帯ラベル字"]}px;color:{地["帯ラベル色"]};
      font-weight:{書体["帯ラベル太さ"]};line-height:{地["帯ラベル字"]}px}}
 .線{{position:absolute;background:{地["線"]}}}
+.点線{{position:absolute;background:repeating-linear-gradient(to right,
+     {地["線"]} 0 8px,transparent 8px 16px)}}
+.点線縦{{position:absolute;background:repeating-linear-gradient(to bottom,
+     {地["線"]} 0 8px,transparent 8px 16px)}}
 .ノード{{position:absolute}}
 .神名{{position:absolute;text-align:center;font-weight:{書体["神名太さ"]};line-height:1;
      font-feature-settings:"palt" 0}}
