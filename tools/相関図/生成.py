@@ -147,7 +147,10 @@ def 縦の規格(幅, 名々, 小々, 役々=None):
     名列 = max((縦の列数(len(n), 列上限, 名前=True) for n in 名々 if n), default=1)
     小列 = max((縦の列数(len(k), 列上限 + 2) for k in 小々 if k), default=0)
     下の分 = (t['サブ上'] + サ) if 位置 == '下' else 0
-    帯の追加 = (役字 + 10) if 位置 == '枠外下' else 0
+    # 枠に重ねるタグは、カードがもともと持つ余白と、親子線の空間に収まるので
+    # 縦の追加はゼロ。下辺だけは帯の下に少し出るので、その半分だけ足す
+    帯の追加 = ((役字 + 10) if 位置 == '枠外下'
+                else ((役字 + 12) // 2 if 位置 == '重ね下' else 0))
     上の分 = (役字 + 10) if 位置 == '上タグ' else 0
     return {'幅': 幅, '高さ': t['上余白'] + 上の分 + 中身 + 下の分 + t['下余白'],
             '中央寄せ': False, '縦': True, '字': 字, '漢字': 漢, 'サブ': サ,
@@ -497,6 +500,25 @@ def HTMLを作る(話データ, ページid, 強調, 書体css):
                             f'<div class="縦役" style="left:{rx}px;top:{上}px;'
                             f'width:{役幅}px;height:{-(-len(役)//役列)*役字}px;'
                             f'font-size:{役字}px;color:{文字色}">{役}</div>')
+                    elif 位置 in ('重ね上', '重ね下', '重ね左'):
+                        tz = 規格['役割字']; th = tz + 12
+                        地色 = 系['塗り'] if not 退場 else 地寸法()['背景']
+                        if 位置 == '重ね左':
+                            tw = tz + 12
+                            部品.append(
+                                f'<div class="重ねタグ縦" style="left:{nd["x"]-tw/2}px;'
+                                f'top:{nd["y"]+24}px;width:{tw}px;'
+                                f'height:{len(役)*tz+22}px;font-size:{tz}px;'
+                                f'color:{地色};background:{文字色};'
+                                f'border:2px solid {地色}">{役}</div>')
+                        else:
+                            y = (nd['y'] - th / 2 if 位置 == '重ね上'
+                                 else nd['y'] + nd['高さ'] - th / 2)
+                            部品.append(
+                                f'<div class="重ねタグ" style="left:{nd["x"]+28}px;'
+                                f'top:{y}px;height:{th}px;font-size:{tz}px;'
+                                f'color:{地色};background:{文字色};'
+                                f'border:2px solid {地色}">{役}</div>')
                     elif 位置 == '枠外下':
                         sz = 規格['役割字']
                         部品.append(
@@ -587,6 +609,12 @@ body{{width:{W}px;height:{H}px;background:{地["背景"]};position:relative;over
      font-feature-settings:"palt" 0}}
 .縦役{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
      font-weight:{書体["サブ太さ"]};line-height:1;opacity:.85}}
+.重ねタグ{{position:absolute;border-radius:{強["太さ"]}px;padding:4px 10px;
+     line-height:1;font-weight:{書体["サブ太さ"]};white-space:nowrap;z-index:6;
+     display:flex;align-items:center}}
+.重ねタグ縦{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
+     border-radius:{強["太さ"]}px;padding:6px 4px;line-height:1;z-index:6;
+     font-weight:{書体["サブ太さ"]}}}
 .タグ{{position:absolute;border-radius:4px;padding:3px 7px;line-height:1;
      font-weight:{書体["サブ太さ"]};white-space:nowrap}}
 .縦小{{position:absolute;writing-mode:vertical-rl;text-orientation:upright;
